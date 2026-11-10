@@ -29,6 +29,105 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ─────────────────────────────────────────────────────────────
+# TDR VISUAL IDENTITY — RESPONSIVE WAREHOUSE PHOTO HERO
+# ─────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+.tdr-hero {
+    position: relative;
+    overflow: hidden;
+    min-height: 295px;
+    display: flex;
+    align-items: center;
+    margin: 0 0 14px 0;
+    border: 1px solid rgba(148,163,184,.18);
+    border-radius: 22px;
+    box-shadow: 0 18px 45px rgba(15,23,42,.17);
+    background-color: #102238;
+    background-image:
+        linear-gradient(95deg, rgba(7,19,39,.98) 0%,rgba(9,30,55,.90) 43%,rgba(12,40,70,.36) 100%),
+        url('https://images.unsplash.com/photo-1749244768351-2726dc23d26c?auto=format&fit=crop&w=1800&q=85');
+    background-size: cover;
+    background-position: center center;
+}
+.tdr-hero::after {
+    content: "";
+    position: absolute;
+    width: 270px; height: 270px;
+    top: -145px; right: -100px;
+    background: rgba(59,130,246,.2);
+    border-radius: 50%;
+    filter: blur(45px);
+    pointer-events: none;
+}
+.tdr-hero-content {
+    position: relative;
+    z-index: 1;
+    padding: 35px 43px;
+    max-width: 800px;
+}
+.tdr-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 13px;
+    border: 1px solid rgba(125,211,252,.35);
+    background: rgba(14,165,233,.10);
+    border-radius: 100px;
+    font-size: 12px; line-height: 1.3;
+    font-weight: 750;
+    letter-spacing: .1em;
+    color: #a5f3fc;
+    margin-bottom: 18px;
+}
+.tdr-hero h1 {
+    margin: 0 0 11px;
+    color: #ffffff !important;
+    font-size: clamp(26px, 3.3vw, 41px);
+    font-weight: 800;
+    line-height: 1.13;
+    letter-spacing: -.035em;
+}
+.tdr-hero p {
+    color: #d5e5f3;
+    font-size: 15px;
+    line-height: 1.65;
+    margin: 0;
+    max-width: 650px;
+}
+.tdr-hero-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin-top: 22px;
+}
+.tdr-hero-tags span {
+    font-size: 12px;
+    font-weight: 650;
+    color: #e0f2fe;
+    border-radius: 8px;
+    background: rgba(255,255,255,.11);
+    border: 1px solid rgba(255,255,255,.14);
+    padding: 7px 11px;
+}
+div[data-testid="stMetric"] {
+    background: #ffffff;
+    border-radius: 13px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 4px 15px rgba(15,23,42,.035);
+    padding: 12px 15px;
+}
+@media (max-width: 640px) {
+  .tdr-hero { min-height: 230px; border-radius: 15px; }
+  .tdr-hero-content { padding: 24px 23px; }
+  .tdr-hero p { font-size: 13px; }
+  .tdr-hero-tags { gap: 6px; }
+  .tdr-hero-tags span { font-size: 11px; }
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ═══════════════════════════════════════════════════════════════
 # STOCK DASHBOARD FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
@@ -563,8 +662,23 @@ def display_specific_designations(df):
 # MAIN APP
 # ═══════════════════════════════════════════════════════════════
 
-st.title("Ayada TDR - Tableau de Bord Stock")
-st.caption("✅ Version Odoo corrigée — 10/11/2026 — build 2026-11-10-R2")
+st.markdown("""
+<div class="tdr-hero">
+  <div class="tdr-hero-content">
+    <div class="tdr-kicker">✦ AYADA · TDR</div>
+    <h1>Tableau de bord du stock</h1>
+    <p>Une vision claire de vos références, quantités et disponibilités.
+       Explorez votre stock Odoo et identifiez rapidement les produits
+       à suivre.</p>
+    <div class="tdr-hero-tags">
+      <span>📦 Gestion des stocks</span>
+      <span>📊 Analyse des références</span>
+      <span>👟 Suivi des tailles</span>
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+st.caption("Version Odoo corrigée — 10/11/2026 — build 2026-11-10-R3")
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3081/3081840.png", width=50)
 st.sidebar.markdown("### Menu Principal")
 st.sidebar.info("Téléchargez un fichier CSV ou Excel pour commencer l'analyse.")

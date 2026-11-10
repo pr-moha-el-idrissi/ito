@@ -128,6 +128,62 @@ div[data-testid="stMetric"] {
 </style>
 """, unsafe_allow_html=True)
 
+# Explicit, accessible colors for desktops using a dark operating-system theme.
+# Keep the visual design light regardless of the browser's preferred color scheme.
+st.markdown("""
+<style>
+:root { color-scheme: light; }
+html, body, .stApp, [data-testid="stAppViewContainer"] {
+    background-color: #f8fafc !important;
+    color: #14263e !important;
+}
+[data-testid="stAppViewContainer"] p,
+[data-testid="stAppViewContainer"] li,
+[data-testid="stAppViewContainer"] label,
+[data-testid="stAppViewContainer"] [data-testid="stWidgetLabel"],
+[data-testid="stAppViewContainer"] [data-testid="stCaptionContainer"] {
+    color: #263b53 !important;
+}
+[data-testid="stAppViewContainer"] h1,
+[data-testid="stAppViewContainer"] h2,
+[data-testid="stAppViewContainer"] h3,
+[data-testid="stAppViewContainer"] h4 {
+    color: #10233b !important;
+}
+[data-testid="stSidebar"] {
+    background-color: #ffffff !important;
+    color: #14263e !important;
+}
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
+    color: #263b53 !important;
+}
+[data-baseweb="input"] input,
+[data-baseweb="select"] > div,
+.stTextInput input {
+    color: #14263e !important;
+    background-color: #ffffff !important;
+}
+.stTabs [data-baseweb="tab"]:not([aria-selected="true"]) {
+    color: #263b53 !important;
+    background: #ffffff !important;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    color: #ffffff !important;
+    background: #2463db !important;
+}
+.tdr-hero .tdr-kicker,
+.tdr-hero .tdr-kicker * { color: #a5f3fc !important; }
+.tdr-hero h1 { color: #ffffff !important; }
+.tdr-hero p { color: #e0ecf8 !important; }
+.tdr-hero-tags span { color: #e0f2fe !important; }
+.stButton > button,
+.stButton > button * { color: #ffffff !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # ═══════════════════════════════════════════════════════════════
 # STOCK DASHBOARD FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
@@ -428,9 +484,14 @@ def display_designation_info(df, designation):
                 st.dataframe(sum_femme[['Taille', 'Total Qté dispo']].style.map(highlight_total_if_one, subset=['Total Qté dispo']), use_container_width=True)
 
 def filter_negative_stock(df):
-    colonnes_affichier = ['fournisseur', 'barcode', 'couleur', 'taille', 'designation', 'rayon', 'marque', 'famille', 'Qté stock dispo', 'Valeur Stock']
-    df['Qté stock dispo'] = df['Qté stock dispo'].fillna(0)
-    return df[df['Qté stock dispo'] < 0][colonnes_affichier]
+    """Show only products with both negative quantity and negative stock value."""
+    colonnes_afficher = [
+        'fournisseur', 'barcode', 'couleur', 'taille', 'designation',
+        'rayon', 'marque', 'famille', 'Qté stock dispo', 'Valeur Stock'
+    ]
+    quantite = pd.to_numeric(df['Qté stock dispo'], errors='coerce')
+    valeur = pd.to_numeric(df['Valeur Stock'], errors='coerce')
+    return df.loc[(quantite < 0) & (valeur < 0), colonnes_afficher].copy()
 
 def display_anita_sizes(df):
     df_anita = df[df['fournisseur'].str.upper() == "ANITA"]
@@ -678,7 +739,7 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
-st.caption("Version Odoo corrigée — 10/11/2026 — build 2026-11-10-R3")
+st.caption("Version Odoo corrigée — 10/11/2026 — build 2026-11-10-R4")
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3081/3081840.png", width=50)
 st.sidebar.markdown("### Menu Principal")
 st.sidebar.info("Téléchargez un fichier CSV ou Excel pour commencer l'analyse.")
@@ -782,10 +843,18 @@ if fichier_telecharge is not None:
 
             with tab3:
                 st.subheader("Produits en stock négatif")
+                st.caption(
+                    "Seules les lignes avec une quantité disponible négative "
+                    "ET une valeur de stock strictement négative sont affichées. "
+                    "Les valeurs égales à 0 sont exclues."
+                )
                 negative_stock = filter_negative_stock(df.copy()).rename(
                     columns={"fournisseur": "Marque / fournisseur"}
                 )
-                st.dataframe(negative_stock.style.apply(highlight_row_if_one, axis=1), use_container_width=True)
+                st.dataframe(
+                    negative_stock.style.apply(highlight_row_if_one, axis=1),
+                    use_container_width=True
+                )
 
             with tab4:
                 st.subheader("Disponibilité Anita")

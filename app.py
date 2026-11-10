@@ -399,93 +399,147 @@ def display_stock_by_family(df):
 
 
 def display_specific_designations(df):
-    brand_col = "marque" if "marque" in df.columns else "fournisseur"
-    for c in [brand_col, "designation", "taille", "famille", "ssfamille", "rayon"]:
-        if c not in df.columns:
-            df[c] = ""
-        df[c] = df[c].fillna("").astype(str)
-    shoe_mask = (
-        df["famille"].str.upper().str.contains("CHAUSS", na=False) |
-        df["ssfamille"].str.upper().str.contains("CHAUSS", na=False) |
-        df["designation"].str.upper().str.contains(r"RUN|TRAIL|RANDO|CHAUSS|SHOE", na=False)
+    """Show shoe sizes using the actual EU/US sizes in the uploaded stock."""
+    work = df.copy()
+    for col in ["marque", "fournisseur", "designation", "taille",
+                "famille", "ssfamille", "rayon"]:
+        if col not in work.columns:
+            work[col] = ""
+        work[col] = work[col].fillna("").astype(str).str.strip()
+
+    work["Qté stock dispo"] = pd.to_numeric(
+        work["Qté stock dispo"], errors="coerce"
+    ).fillna(0)
+    work["brand_name"] = work["marque"].where(
+        work["marque"].ne(""), work["fournisseur"]
+    ).str.upper().str.strip()
+
+    if work["famille"].ne("").any() or work["ssfamille"].ne("").any():
+        mask = (
+            work["famille"].str.contains("CHAUSS", case=False, na=False)
+            | work["ssfamille"].str.contains("CHAUSS", case=False, na=False)
+        )
+    else:
+        mask = work["designation"].str.contains(
+            r"RUNNING|TRAIL|RANDO|CHAUSS|SHOE", case=False, na=False
+        )
+    work = work.loc[
+        mask & work["brand_name"].ne("") & work["designation"].ne("")
+    ].copy()
+    if work.empty:
+        st.info("Aucune chaussure identifiable dans cet export.")
+        return
+
+    supplier = st.selectbox(
+        "Choisissez une marque de chaussures",
+        sorted(work["brand_name"].unique().tolist())
     )
-    df_shoes = df[shoe_mask].copy() if not df[shoe_mask].empty else df.copy()
-    preferred = ["ASICS", "BROOKS", "HOKA", "LA SPORTIVA", "MIZUNO", "NEW BALANCE", "SALOMON", "SAUCONY"]
-    brands_series = df_shoes[brand_col].str.upper().str.strip()
-    brand_counts = brands_series.value_counts()
-    brands = [b for b in preferred if b in brand_counts.index] or brand_counts.head(12).index.tolist()
-    suppliers = {b: [d for d in sorted(df_shoes.loc[brands_series == b, "designation"].astype(str).str.strip().unique()) if d] for b in brands}
-    def normalize_size(size):
-        if pd.isna(size): return ""
-        s = str(size).upper().strip().replace(",", ".")
-        s = re.sub(r"\b(US|UK|EU)\b", "", s).strip()
-        s = re.sub(r"\s+", " ", s)
-        if re.fullmatch(r"\d+[A-Z]", s): return s
-        def format_half(v): return f"{round(float(v) * 2) / 2:.1f}"
-        unicode_frac = {"½": (1,2), "⅓": (1,3), "⅔": (2,3), "¼": (1,4), "¾": (3,4)}
-        for symb, (num, den) in unicode_frac.items():
-            if symb in s:
-                bm = re.search(r"(\d+(\.\d+)?)", s.replace(symb, ""))
-                base = float(bm.group(1)) if bm else 0.0
-                return format_half(base + num / den)
-        m = re.match(r"^(\d+)\s+(\d+)\s*/\s*(\d+)$", s)
-        if m:
-            return format_half(int(m.group(1)) + int(m.group(2)) / (int(m.group(3)) or 1))
-        m = re.search(r"(\d+(\.\d+)?)", s)
-        return format_half(float(m.group(1))) if m else s
-    cols = st.columns(4)
-    for i, supplier in enumerate(sorted(suppliers.keys())):
-        with cols[i % 4]:
-            if st.button(supplier, key=f"btn_{supplier}"):
-                st.session_state.selected_supplier = supplier
-    if st.session_state.get("selected_supplier") not in suppliers:
-        st.session_state.pop("selected_supplier", None)
-    if "selected_supplier" in st.session_state:
-        supplier = st.session_state.selected_supplier
-        designations = suppliers[supplier]
-        df_filtered = df[df['designation'].str.upper().isin([d.upper() for d in designations])].copy()
-        if not df_filtered.empty:
-            df_filtered['taille_normalisee'] = df_filtered['taille'].apply(normalize_size)
-            results = []
-            for designation in sorted(designations):
-                df_design = df_filtered[df_filtered['designation'].str.upper() == designation.upper()]
-                is_woman = " W" in designation.upper() or "WOMAN" in designation.upper()
-                if supplier == "SALOMON":
-                    sizes = list(range(4, 10)) if is_woman else list(range(6, 14))
-                    expected = [f"{x}.0" for x in sizes] + [f"{x}.5" for x in sizes[:-1]]
-                elif supplier == "LA SPORTIVA":
-                    sizes = list(range(36, 43)) if is_woman else list(range(40, 49))
-                    expected = [f"{x/2:.1f}" for x in range(sizes[0]*2, sizes[-1]*2+1)]
-                elif supplier == "MIZUNO":
-                    raw = [4.0,4.5,5.0,5.5,6.5,7.0,7.5,8.0,9.0] if is_woman else [6.0,6.5,7.0,7.5,8.0,9.0,10.0,10.5,11.0,11.5,12.0]
-                    expected = [f"{s:.1f}" for s in raw]
-                elif supplier == "NEW BALANCE":
-                    sizes = list(range(5, 11)) if is_woman else list(range(7, 15))
-                    expected = [f"{x}.0" for x in sizes] + [f"{x}.5" for x in sizes if x < 13]
-                else:
-                    sizes = list(range(5, 11)) if is_woman else list(range(7, 15))
-                    expected = [f"{x}.0" for x in sizes] + [f"{x}.5" for x in sizes if x < 13]
-                available = df_design['taille_normalisee'].dropna().unique()
-                missing = [s for s in expected if s not in available]
-                results.append({'Modèle': designation, 'Tailles disponibles': len(available), 'Tailles manquantes': ", ".join(missing) if missing else "Complet"})
-            results_df = pd.DataFrame(results)
-            st.markdown(f"### {supplier} - Stock disponible")
-            st.dataframe(results_df, use_container_width=True)
-            st.markdown("---")
-            col1, col2 = st.columns(2)
-            with col1:
-                try:
-                    output = BytesIO()
-                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        results_df.to_excel(writer, sheet_name=f"{supplier}_Stock", index=False)
-                    st.download_button("📊 Exporter en Excel (XLSX)", data=output.getvalue(), file_name=f"{supplier}_stock.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                except Exception as e:
-                    st.error(f"Erreur Excel: {str(e)}")
-            with col2:
-                try:
-                    st.download_button("📄 Exporter en CSV", data=results_df.to_csv(index=False, sep=';'), file_name=f"{supplier}_stock.csv", mime="text/csv")
-                except Exception as e:
-                    st.error(f"Erreur CSV: {str(e)}")
+    work = work.loc[work["brand_name"] == supplier]
+
+    def number_from_size(raw):
+        label = str(raw).upper().strip().replace(",", ".")
+        label = re.sub(r"(?:US|UK|EU)$", "", label).strip()
+        for symbol, fraction in [
+            ("½", " 1/2"), ("⅓", " 1/3"), ("⅔", " 2/3"),
+            ("¼", " 1/4"), ("¾", " 3/4")
+        ]:
+            label = label.replace(symbol, fraction)
+        match = re.fullmatch(
+            r"(\d+(?:\.\d+)?)(?:\s+(\d+)\s*/\s*(\d+))?", label
+        )
+        if not match:
+            return None
+        value = float(match.group(1))
+        if match.group(2):
+            den = int(match.group(3))
+            if den == 0:
+                return None
+            value += int(match.group(2)) / den
+        return value
+
+    def size_label(value, step, suffix):
+        integer = int(value)
+        fraction = value - integer
+        if abs(step - 1 / 3) < 0.001:
+            n = round(fraction * 3)
+            if n == 3:
+                integer += 1
+                n = 0
+            label = f"{integer} {n}/3" if n else str(integer)
+        else:
+            label = f"{value:.1f}".rstrip("0").rstrip(".")
+        return label + suffix
+
+    results = []
+    for (name, rayon), group in work.groupby(
+        ["designation", "rayon"], dropna=False, sort=True
+    ):
+        quantities = group.groupby("taille")["Qté stock dispo"].sum()
+        available = sorted(
+            size for size, qty in quantities.items() if size and qty > 0
+        )
+        unavailable = sorted(
+            size for size, qty in quantities.items() if size and qty <= 0
+        )
+        values = sorted({
+            round(n, 4) for n in
+            (number_from_size(size) for size in quantities.index)
+            if n is not None
+        })
+        missing = []
+        if len(values) > 1:
+            raw_sizes = [str(size).upper() for size in quantities.index]
+            third_sizes = any(
+                re.search(r"[12]\s*/\s*3|[⅓⅔]", size)
+                for size in raw_sizes
+            )
+            half_sizes = any(
+                abs(v * 2 - round(v * 2)) < 0.001
+                and abs(v - round(v)) > 0.001 for v in values
+            )
+            step = (1 / 3 if third_sizes else
+                    0.5 if half_sizes or values[-1] < 20 else 1.0)
+            suffix = "US" if any("US" in size for size in raw_sizes) else ""
+            count = round((values[-1] - values[0]) / step)
+            if 1 < count <= 120:
+                for k in range(1, count):
+                    candidate = values[0] + k * step
+                    if not any(abs(candidate - v) < 0.02 for v in values):
+                        missing.append(size_label(candidate, step, suffix))
+
+        results.append({
+            "Modèle": name,
+            "Genre": rayon,
+            "Tailles en stock": ", ".join(available) or "Aucune",
+            "Tailles sans stock": ", ".join(unavailable) or "—",
+            "Lacunes entre tailles observées": ", ".join(missing) or "—"
+        })
+
+    result = pd.DataFrame(results)
+    st.subheader(f"{supplier} — disponibilité des tailles")
+    st.caption(
+        "Les tailles sans stock ont une quantité nulle ou négative dans "
+        "l'export. Les lacunes sont inférées uniquement entre les tailles "
+        "observées ; l'export ne contient pas le catalogue complet."
+    )
+    st.dataframe(result, use_container_width=True)
+    export_name = re.sub(r"[^a-z0-9_-]+", "_", supplier.lower()) or "marque"
+    col1, col2 = st.columns(2)
+    with col1:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            result.to_excel(writer, sheet_name="Tailles", index=False)
+        st.download_button(
+            "📊 Exporter en Excel (XLSX)", data=output.getvalue(),
+            file_name=f"{export_name}_tailles.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    with col2:
+        st.download_button(
+            "📄 Exporter en CSV",
+            data=result.to_csv(index=False, sep=";"),
+            file_name=f"{export_name}_tailles.csv", mime="text/csv"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════

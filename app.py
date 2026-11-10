@@ -60,8 +60,9 @@ def to_numeric_series(values):
 
 def standardize_stock_columns(df):
     df = df.copy()
+    df.columns = [str(column).strip() for column in df.columns]
 
-    # Keep a real supplier field when present; this export only provides brands.
+    # Use 'Marque' for supplier views when a supplier name is unavailable.
     supplier_source = find_column(df, ["fournisseur", "supplier", "vendor"])
     brand_source = find_column(df, ["marque", "brand"])
     if supplier_source is not None:
@@ -112,21 +113,50 @@ def standardize_stock_columns(df):
             quantity = quantity - to_numeric_series(df[reserved_source]).fillna(0)
     df["Qté stock dispo"] = quantity.fillna(0)
 
-    price_source = find_column(df, ["Prix Achat", "purchase price", "unit cost", "Valeur"])
+    # Odoo's 'Valeur' is already a total valuation per inventory/location
+    # row. Treating it as unit price would multiply the stock value twice.
+    price_source = find_column(df, [
+        "Prix Achat", "purchase price", "unit cost", "cout unitaire"
+    ])
+    value_source = find_column(df, ["Valeur"])
+    is_odoo_export = (
+        find_column(df, ["Emplacement", "Stock location"]) is not None
+        and find_column(df, ["Quantité inventoriée"]) is not None
+    )
+    stock_value_aliases = [
+        "Valeur Stock", "stock value", "inventory value",
+        "valeur totale du stock"
+    ]
+    if is_odoo_export:
+        stock_value_aliases.append("Valeur")
+    stock_value_source = find_column(df, stock_value_aliases)
+
     if price_source is not None:
         df["Prix Achat"] = to_numeric_series(df[price_source]).fillna(0)
+    elif is_odoo_export and value_source is not None:
+        row_value = to_numeric_series(df[value_source]).fillna(0)
+        inventory_source = find_column(df, ["Quantité inventoriée"])
+        units = to_numeric_series(df[inventory_source])
+        units = units.where(units.ne(0))
+        df["Prix Achat"] = (
+            (row_value / units)
+            .replace([float("inf"), -float("inf")], 0)
+            .fillna(0)
+        )
+    elif value_source is not None:
+        # Preserve earlier non-Odoo exports, where 'Valeur' was a unit cost.
+        df["Prix Achat"] = to_numeric_series(df[value_source]).fillna(0)
     else:
         df["Prix Achat"] = 0.0
 
-    stock_value_source = find_column(df, [
-        "Valeur Stock", "stock value", "inventory value", "valeur totale du stock"
-    ])
     calculated_value = df["Qté stock dispo"] * df["Prix Achat"]
     if stock_value_source is not None:
         source_value = to_numeric_series(df[stock_value_source])
-        df["Valeur Stock"] = source_value.where(source_value.notna(), calculated_value).fillna(0)
+        df["Valeur Stock"] = source_value.where(
+            source_value.notna(), calculated_value
+        ).fillna(0)
     else:
-        df["Valeur Stock"] = calculated_value
+        df["Valeur Stock"] = calculated_value.fillna(0)
 
     for column in [
         "fournisseur", "barcode", "couleur", "taille", "designation",
@@ -136,6 +166,8 @@ def standardize_stock_columns(df):
             df[column] = ""
         df[column] = df[column].fillna("").astype(str).str.strip()
 
+    # Prevent sparse numeric barcode columns from displaying a trailing '.0'.
+    df["barcode"] = df["barcode"].str.replace(r"\.0$", "", regex=True)
     return df, supplier_source is None and brand_source is not None
 
 
@@ -273,11 +305,11 @@ def display_designation_info(df, designation):
         if not sum_homme.empty:
             with col1:
                 st.subheader("Somme par taille - HOMME")
-                st.dataframe(sum_homme[['Taille', 'Total Qté dispo']].style.applymap(highlight_total_if_one, subset=['Total Qté dispo']), use_container_width=True)
+                st.dataframe(sum_homme[['Taille', 'Total Qté dispo']].style.map(highlight_total_if_one, subset=['Total Qté dispo']), use_container_width=True)
         if not sum_femme.empty:
             with col2:
                 st.subheader("Somme par taille - FEMME")
-                st.dataframe(sum_femme[['Taille', 'Total Qté dispo']].style.applymap(highlight_total_if_one, subset=['Total Qté dispo']), use_container_width=True)
+                st.dataframe(sum_femme[['Taille', 'Total Qté dispo']].style.map(highlight_total_if_one, subset=['Total Qté dispo']), use_container_width=True)
 
 def filter_negative_stock(df):
     colonnes_affichier = ['fournisseur', 'barcode', 'couleur', 'taille', 'designation', 'rayon', 'marque', 'famille', 'Qté stock dispo', 'Valeur Stock']
@@ -491,6 +523,32 @@ if fichier_telecharge is not None:
             if df.empty:
                 raise ValueError("Le fichier ne contient aucune ligne de stock.")
 
+            # Virtual inventory adjustments are accounting counterparts, not
+            # warehouse stock. Exclude them from physical stock by default.
+            excluded_adjustments = 0
+            location_source = find_column(
+                df, ["Emplacement", "Stock location", "Location"]
+            )
+            if location_source is not None:
+                locations = df[location_source].fillna("").astype(str).str.casefold()
+                virtual_locations = locations.str.contains(
+                    r"inventory adjustments?|ajustements? d['’ ]inventaire",
+                    na=False, regex=True
+                )
+                if virtual_locations.any():
+                    include_adjustments = st.sidebar.checkbox(
+                        "Inclure les emplacements virtuels (ajustements d'inventaire)",
+                        value=False
+                    )
+                    if not include_adjustments:
+                        excluded_adjustments = int(virtual_locations.sum())
+                        df = df.loc[~virtual_locations].copy()
+                        if df.empty:
+                            raise ValueError(
+                                "Aucun stock physique après exclusion "
+                                "des emplacements virtuels."
+                            )
+
             uses_brand_as_supplier = (
                 find_column(df, ["fournisseur", "supplier", "vendor"]) is None
                 and find_column(df, ["marque", "brand"]) is not None
@@ -500,6 +558,17 @@ if fichier_telecharge is not None:
             df = clean_size_column(df)
 
             st.success(f"Données chargées avec succès — {len(df):,} lignes.".replace(",", " "))
+            if excluded_adjustments:
+                st.info(
+                    f"{excluded_adjustments:,} lignes d'ajustement virtuel exclues "
+                    "de l'analyse du stock physique. Vous pouvez les inclure "
+                    "depuis le menu latéral."
+                )
+            if location_source is not None and find_column(df, ["Valeur"]) is not None:
+                st.caption(
+                    "Dans l'export Odoo, « Valeur » correspond à la "
+                    "valorisation totale d'une ligne, pas au prix unitaire."
+                )
             if uses_brand_as_supplier:
                 st.info(
                     "Cet export ne contient pas de fournisseur dédié. "

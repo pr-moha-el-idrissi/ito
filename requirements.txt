@@ -19,4 +19,4 @@ numpy
 openpyxl
 pdfplumber
 xlsxwriter
- 
+# Streamlit Cloud dependency refresh: Odoo stock import fix 2026-11-10

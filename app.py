@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 import re
+import unicodedata
 
 st.set_page_config(page_title="Ayada TDR", layout="wide", initial_sidebar_state="expanded")
 
@@ -32,16 +33,128 @@ st.markdown("""
 # STOCK DASHBOARD FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
 
+def normalize_header(value):
+    value = unicodedata.normalize("NFKD", str(value))
+    value = "".join(char for char in value if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def find_column(df, aliases):
+    columns_by_name = {}
+    for column in df.columns:
+        normalized = normalize_header(column)
+        if normalized and normalized not in columns_by_name:
+            columns_by_name[normalized] = column
+    for alias in aliases:
+        match = columns_by_name.get(normalize_header(alias))
+        if match is not None:
+            return match
+    return None
+
+
+def to_numeric_series(values):
+    cleaned = values.astype(str).str.replace(r"[\s\u00a0\u202f]", "", regex=True)
+    cleaned = cleaned.str.replace(",", ".", regex=False)
+    return pd.to_numeric(cleaned, errors="coerce")
+
+
+def standardize_stock_columns(df):
+    df = df.copy()
+
+    # Keep a real supplier field when present; this export only provides brands.
+    supplier_source = find_column(df, ["fournisseur", "supplier", "vendor"])
+    brand_source = find_column(df, ["marque", "brand"])
+    if supplier_source is not None:
+        df["fournisseur"] = df[supplier_source]
+    elif brand_source is not None:
+        df["fournisseur"] = df[brand_source]
+    else:
+        df["fournisseur"] = ""
+
+    text_aliases = {
+        "barcode": ["barcode", "code-barres", "code barre", "ean", "ean13"],
+        "couleur": ["couleur", "color", "colour"],
+        "taille": ["taille", "size"],
+        "designation": ["designation produit", "designation", "product name", "nom du produit", "libelle", "produit"],
+        "rayon": ["rayon", "genre", "gender", "sexe"],
+        "famille": ["famille", "family"],
+        "categorie": ["categorie", "category"],
+        "ssfamille": ["ssfamille", "sous-famille", "sous-categorie", "subcategory", "subfamily"],
+    }
+    for target, aliases in text_aliases.items():
+        source = find_column(df, aliases)
+        if source is not None:
+            df[target] = df[source]
+
+    if brand_source is not None:
+        df["marque"] = df[brand_source]
+    elif supplier_source is not None:
+        df["marque"] = df[supplier_source]
+    else:
+        df["marque"] = ""
+
+    quantity_source = find_column(df, [
+        "Qté stock dispo", "Quantité disponible", "quantite disponible",
+        "available quantity", "quantity available", "stock available"
+    ])
+    if quantity_source is not None:
+        quantity = to_numeric_series(df[quantity_source])
+    else:
+        inventory_source = find_column(df, ["Quantité inventoriée", "quantity on hand", "inventory quantity"])
+        reserved_source = find_column(df, ["Quantité réservée", "reserved quantity"])
+        if inventory_source is None:
+            raise ValueError(
+                "Colonne de quantité introuvable. Utilisez « Quantité disponible » "
+                "ou « Qté stock dispo » dans le fichier."
+            )
+        quantity = to_numeric_series(df[inventory_source])
+        if reserved_source is not None:
+            quantity = quantity - to_numeric_series(df[reserved_source]).fillna(0)
+    df["Qté stock dispo"] = quantity.fillna(0)
+
+    price_source = find_column(df, ["Prix Achat", "purchase price", "unit cost", "Valeur"])
+    if price_source is not None:
+        df["Prix Achat"] = to_numeric_series(df[price_source]).fillna(0)
+    else:
+        df["Prix Achat"] = 0.0
+
+    stock_value_source = find_column(df, [
+        "Valeur Stock", "stock value", "inventory value", "valeur totale du stock"
+    ])
+    calculated_value = df["Qté stock dispo"] * df["Prix Achat"]
+    if stock_value_source is not None:
+        source_value = to_numeric_series(df[stock_value_source])
+        df["Valeur Stock"] = source_value.where(source_value.notna(), calculated_value).fillna(0)
+    else:
+        df["Valeur Stock"] = calculated_value
+
+    for column in [
+        "fournisseur", "barcode", "couleur", "taille", "designation",
+        "rayon", "marque", "famille", "categorie", "ssfamille"
+    ]:
+        if column not in df.columns:
+            df[column] = ""
+        df[column] = df[column].fillna("").astype(str).str.strip()
+
+    return df, supplier_source is None and brand_source is not None
+
+
 def clean_numeric_columns(df):
-    for col in ['Prix Achat', 'Qté stock dispo', 'Valeur Stock']:
-        if col in df.columns:
-            df[col] = df[col].astype(str).str.replace(',', '.').astype(float)
+    for column in ["Prix Achat", "Qté stock dispo", "Valeur Stock"]:
+        if column in df.columns:
+            df[column] = to_numeric_series(df[column]).fillna(0)
     return df
 
+
 def clean_size_column(df):
-    if 'taille' in df.columns:
-        df['taille'] = df['taille'].astype(str).str.strip()
+    for column, prefix in [("taille", "taille"), ("couleur", "couleur")]:
+        if column in df.columns:
+            df[column] = df[column].fillna("").astype(str).str.strip()
+            df[column] = df[column].str.replace(
+                rf"^\s*{prefix}\s*:\s*", "", regex=True, case=False
+            )
     return df
+
 
 def highlight_row_if_one(row):
     if row['Qté stock dispo'] == 1:
@@ -59,7 +172,7 @@ def display_supplier_info(df, fournisseur):
         with st.expander(f"Désignations disponibles pour {fournisseur}", expanded=True):
             designations_rayons['selection'] = designations_rayons.apply(lambda x: f"{x['designation']} ({x['rayon']})", axis=1)
             selected = st.selectbox("Sélectionnez une désignation pour voir les tailles manquantes", designations_rayons['selection'])
-            selected_design, selected_rayon = selected.split(" (")
+            selected_design, selected_rayon = selected.rsplit(" (", 1)
             selected_rayon = selected_rayon[:-1]
             filtered = df_filtered[(df_filtered['designation'] == selected_design) & (df_filtered['rayon'] == selected_rayon)]
             if selected_rayon.upper() == 'FEMME':
@@ -101,7 +214,7 @@ def display_supplier_info(df, fournisseur):
                 missing_sizes = []
             st.markdown(f"**Tailles disponibles pour {selected_design} ({selected_rayon}):**")
             display_sizes = []
-            for size in sorted(size_qtys.keys()):
+            for size in sorted(size_qtys.keys(), key=lambda value: (0, value) if isinstance(value, float) else (1, str(value))):
                 qty = size_qtys[size]
                 display_size = size_mapping.get(size, str(size))
                 display_text = f"{display_size} ({qty})"
@@ -199,11 +312,13 @@ def display_sidas_levels(df):
     return results
 
 def total_stock_value_by_supplier(df):
-    df['Qté stock dispo'] = pd.to_numeric(df['Qté stock dispo'], errors='coerce').fillna(0)
-    df['Prix Achat'] = pd.to_numeric(df['Prix Achat'], errors='coerce').fillna(0)
-    df['Valeur Totale HT'] = df['Qté stock dispo'] * df['Prix Achat']
-    total_value_by_supplier = df.groupby('fournisseur')['Valeur Totale HT'].sum().reset_index()
-    return total_value_by_supplier.sort_values(by='Valeur Totale HT', ascending=False)
+    result = pd.DataFrame({
+        "Marque / fournisseur": df["fournisseur"].fillna("").astype(str).str.strip().replace("", "Non renseigné"),
+        "Valeur Totale HT": pd.to_numeric(df["Valeur Stock"], errors="coerce").fillna(0)
+    })
+    result = result.groupby("Marque / fournisseur", as_index=False)["Valeur Totale HT"].sum()
+    return result.sort_values(by="Valeur Totale HT", ascending=False)
+
 
 def sort_sizes(df):
     df['taille'] = pd.Categorical(df['taille'],
@@ -213,31 +328,43 @@ def sort_sizes(df):
     return df.sort_values('taille')
 
 def display_stock_by_family(df):
-    familles = ["CHAUSSURES RANDO", "CHAUSSURES RUNN", "CHAUSSURE TRAIL"]
-    for famille in familles:
-        st.subheader(f"Catégorie : {famille}")
-        df['famille'] = df['famille'].fillna('')
-        df_family = df[df['famille'].str.upper() == famille]
-        if 'Valeur Stock' not in df_family.columns or df_family['Valeur Stock'].isnull().all():
-            df_family['Valeur Stock'] = df_family['Qté stock dispo'] * df_family.get('Prix Achat', 0)
-        total_stock = df_family['Qté stock dispo'].sum()
-        total_stock_value = df_family['Valeur Stock'].sum()
-        col1, col2 = st.columns(2)
-        col1.metric("Qté dispo totale", f"{int(total_stock)}")
-        col2.metric("Valeur totale du stock HT", f"{total_stock_value:,.2f} €".replace(',', ' '))
-        rayon_filter = st.selectbox(f"Filtrer par Rayon pour {famille}:", ['Tous', 'Homme', 'Femme', 'Autre'], key=f"rayon_{famille}")
-        if rayon_filter != 'Tous':
-            df_family['rayon'] = df_family['rayon'].fillna('')
-            if rayon_filter in ['Homme', 'Femme']:
-                df_family = df_family[df_family['rayon'].str.upper() == rayon_filter.upper()]
-            else:
-                df_family = df_family[~df_family['rayon'].str.upper().isin(['HOMME', 'FEMME'])]
-        if not df_family.empty:
-            df_family = sort_sizes(df_family.copy())
-            st.dataframe(df_family[['rayon', 'fournisseur', 'couleur', 'taille', 'designation', 'marque', 'ssfamille', 'Qté stock dispo', 'Valeur Stock']].style.apply(highlight_row_if_one, axis=1), use_container_width=True)
-        else:
-            st.info(f"Aucune information disponible pour {famille} dans le rayon {rayon_filter}.")
-        st.markdown("---")
+    st.subheader("Stock par famille et catégorie")
+    work = df.copy()
+    family_values = sorted(value for value in work["famille"].dropna().astype(str).str.strip().unique() if value)
+    family_options = ["Toutes"] + family_values
+    selected_family = st.selectbox("Filtrer par famille", family_options)
+
+    if selected_family != "Toutes":
+        work = work[work["famille"].astype(str).str.strip() == selected_family]
+
+    category_values = sorted(value for value in work["categorie"].dropna().astype(str).str.strip().unique() if value)
+    if category_values:
+        selected_category = st.selectbox("Filtrer par catégorie", ["Toutes"] + category_values)
+        if selected_category != "Toutes":
+            work = work[work["categorie"].astype(str).str.strip() == selected_category]
+
+    total_stock = work["Qté stock dispo"].sum()
+    total_value = work["Valeur Stock"].sum()
+    col1, col2 = st.columns(2)
+    col1.metric("Quantité disponible", f"{total_stock:,.0f}".replace(",", " "))
+    col2.metric("Valeur totale du stock", f"{total_value:,.2f} €".replace(",", " "))
+
+    columns = [
+        "famille", "categorie", "ssfamille", "rayon", "fournisseur",
+        "couleur", "taille", "designation", "Qté stock dispo", "Valeur Stock"
+    ]
+    display = work[columns].rename(columns={
+        "famille": "Famille",
+        "categorie": "Catégorie",
+        "ssfamille": "Sous-catégorie",
+        "rayon": "Genre",
+        "fournisseur": "Marque / fournisseur",
+        "couleur": "Couleur",
+        "taille": "Taille",
+        "designation": "Désignation",
+    })
+    st.dataframe(display.style.apply(highlight_row_if_one, axis=1), use_container_width=True)
+
 
 def display_specific_designations(df):
     brand_col = "marque" if "marque" in df.columns else "fournisseur"
@@ -279,7 +406,9 @@ def display_specific_designations(df):
         with cols[i % 4]:
             if st.button(supplier, key=f"btn_{supplier}"):
                 st.session_state.selected_supplier = supplier
-    if 'selected_supplier' in st.session_state:
+    if st.session_state.get("selected_supplier") not in suppliers:
+        st.session_state.pop("selected_supplier", None)
+    if "selected_supplier" in st.session_state:
         supplier = st.session_state.selected_supplier
         designations = suppliers[supplier]
         df_filtered = df[df['designation'].str.upper().isin([d.upper() for d in designations])].copy()
@@ -335,71 +464,100 @@ st.title("Ayada TDR - Tableau de Bord Stock")
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3081/3081840.png", width=50)
 st.sidebar.markdown("### Menu Principal")
 st.sidebar.info("Téléchargez un fichier CSV ou Excel pour commencer l'analyse.")
-fichier_telecharge = st.sidebar.file_uploader("📂 Fichier source stock", type=['csv', 'xlsx'])
+fichier_telecharge = st.sidebar.file_uploader("📂 Fichier source stock", type=["csv", "xlsx"])
 
 if fichier_telecharge is not None:
-    extension_fichier = fichier_telecharge.name.split('.')[-1]
+    extension_fichier = fichier_telecharge.name.rsplit(".", 1)[-1].lower()
     try:
         with st.spinner("Chargement et préparation des données..."):
-            if extension_fichier == 'csv':
-                df = pd.read_csv(fichier_telecharge, encoding='ISO-8859-1', sep=';')
-            elif extension_fichier == 'xlsx':
-                df = pd.read_excel(fichier_telecharge)
+            if extension_fichier == "csv":
+                df = None
+                csv_bytes = fichier_telecharge.getvalue()
+                for encoding in ("utf-8-sig", "cp1252", "ISO-8859-1"):
+                    try:
+                        df = pd.read_csv(
+                            BytesIO(csv_bytes), encoding=encoding, sep=None, engine="python"
+                        )
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                if df is None:
+                    raise ValueError("Impossible de lire l'encodage du fichier CSV.")
+            elif extension_fichier in ("xlsx", "xls"):
+                df = pd.read_excel(fichier_telecharge, sheet_name=0)
             else:
-                st.error("Format de fichier non supporté"); df = None
+                raise ValueError("Format non pris en charge. Importez un fichier CSV ou Excel.")
 
-            if df is not None:
-                df = clean_numeric_columns(df)
-                df = clean_size_column(df)
-                st.success("Données chargées avec succès!")
+            if df.empty:
+                raise ValueError("Le fichier ne contient aucune ligne de stock.")
 
-                tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-                    "🏢 Fournisseur", "🔍 Modèle", "⚠️ Stock Négatif",
-                    "👙 Anita", "🦶 Sidas", "💰 Valeur Stock",
-                    "👟 Catégories", "📊 Tailles Manquantes"
-                ])
+            uses_brand_as_supplier = (
+                find_column(df, ["fournisseur", "supplier", "vendor"]) is None
+                and find_column(df, ["marque", "brand"]) is not None
+            )
+            df, _ = standardize_stock_columns(df)
+            df = clean_numeric_columns(df)
+            df = clean_size_column(df)
 
-                with tab1:
-                    fournisseur = st.text_input("Rechercher un fournisseur:")
-                    df_filtered = display_supplier_info(df.copy(), fournisseur)
-                    if not df_filtered.empty:
-                        st.dataframe(df_filtered.style.apply(highlight_row_if_one, axis=1), use_container_width=True)
-                    elif fournisseur:
-                        st.warning("Aucune information disponible pour ce fournisseur.")
+            st.success(f"Données chargées avec succès — {len(df):,} lignes.".replace(",", " "))
+            if uses_brand_as_supplier:
+                st.info(
+                    "Cet export ne contient pas de fournisseur dédié. "
+                    "Les vues par fournisseur utilisent la colonne « Marque »."
+                )
 
-                with tab2:
-                    designation = st.text_input("Rechercher un modèle exact:")
-                    display_designation_info(df.copy(), designation)
+            tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+                "🏷️ Marque / fournisseur", "🔍 Modèle", "⚠️ Stock Négatif",
+                "👙 Anita", "🦶 Sidas", "💰 Valeur Stock",
+                "👟 Catégories", "📊 Tailles Manquantes"
+            ])
 
-                with tab3:
-                    st.subheader("Produits en stock négatif")
-                    st.dataframe(filter_negative_stock(df.copy()).style.apply(highlight_row_if_one, axis=1), use_container_width=True)
+            with tab1:
+                fournisseur = st.text_input("Rechercher une marque ou un fournisseur :")
+                df_filtered = display_supplier_info(df.copy(), fournisseur)
+                if not df_filtered.empty:
+                    display = df_filtered.rename(columns={"fournisseur": "Marque / fournisseur"})
+                    st.dataframe(display.style.apply(highlight_row_if_one, axis=1), use_container_width=True)
+                elif fournisseur:
+                    st.warning("Aucune information disponible pour cette marque ou ce fournisseur.")
 
-                with tab4:
-                    st.subheader("Disponibilité Anita")
-                    st.dataframe(display_anita_sizes(df), use_container_width=True)
+            with tab2:
+                designation = st.text_input("Rechercher un modèle exact :")
+                display_designation_info(df.copy(), designation)
 
-                with tab5:
-                    st.subheader("Disponibilité Semelles Sidas")
-                    for level, df_level in display_sidas_levels(df).items():
-                        st.markdown(f"**Niveau {level}**")
-                        st.dataframe(df_level.style.apply(highlight_row_if_one, axis=1), use_container_width=True)
+            with tab3:
+                st.subheader("Produits en stock négatif")
+                negative_stock = filter_negative_stock(df.copy()).rename(
+                    columns={"fournisseur": "Marque / fournisseur"}
+                )
+                st.dataframe(negative_stock.style.apply(highlight_row_if_one, axis=1), use_container_width=True)
 
-                with tab6:
-                    st.subheader("Valorisation par Fournisseur")
-                    df_tv = total_stock_value_by_supplier(df)
-                    st.metric("Valeur Totale Globale du Stock", f"{df_tv['Valeur Totale HT'].sum():,.2f} €".replace(',', ' '))
-                    st.dataframe(df_tv, use_container_width=True)
+            with tab4:
+                st.subheader("Disponibilité Anita")
+                st.dataframe(display_anita_sizes(df), use_container_width=True)
 
-                with tab7:
-                    display_stock_by_family(df)
+            with tab5:
+                st.subheader("Disponibilité Semelles Sidas")
+                for level, df_level in display_sidas_levels(df).items():
+                    st.markdown(f"**Niveau {level}**")
+                    st.dataframe(df_level.style.apply(highlight_row_if_one, axis=1), use_container_width=True)
 
-                with tab8:
-                    st.subheader("Analyse de la profondeur de gamme (Chaussures)")
-                    display_specific_designations(df.copy())
+            with tab6:
+                st.subheader("Valorisation par marque / fournisseur")
+                df_tv = total_stock_value_by_supplier(df)
+                st.metric("Valeur Totale Globale du Stock", f"{df_tv['Valeur Totale HT'].sum():,.2f} €".replace(",", " "))
+                st.dataframe(df_tv, use_container_width=True)
+
+            with tab7:
+                display_stock_by_family(df)
+
+            with tab8:
+                st.subheader("Analyse de la profondeur de gamme (Chaussures)")
+                display_specific_designations(df.copy())
 
     except Exception as e:
-        st.error(f"Erreur lors du traitement du fichier: {str(e)}")
+        st.error(f"Impossible de traiter ce fichier stock : {str(e)}")
+
 
 else:
     st.info("Utilisez la barre latérale pour charger un fichier stock pour commencer.")

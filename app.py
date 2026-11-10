@@ -564,6 +564,7 @@ def display_specific_designations(df):
 # ═══════════════════════════════════════════════════════════════
 
 st.title("Ayada TDR - Tableau de Bord Stock")
+st.caption("✅ Version Odoo corrigée — 10/11/2026 — build 2026-11-10-R2")
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3081/3081840.png", width=50)
 st.sidebar.markdown("### Menu Principal")
 st.sidebar.info("Téléchargez un fichier CSV ou Excel pour commencer l'analyse.")

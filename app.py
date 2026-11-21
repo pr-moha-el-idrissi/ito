@@ -586,10 +586,10 @@ def display_sidas_levels(df):
 def total_stock_value_by_supplier(df):
     result = pd.DataFrame({
         "Marque / fournisseur": df["fournisseur"].fillna("").astype(str).str.strip().replace("", "Non renseigné"),
-        "Valeur Totale HT": pd.to_numeric(df["Valeur Stock"], errors="coerce").fillna(0)
+        "Valeur totale": pd.to_numeric(df["Valeur Stock"], errors="coerce").fillna(0)
     })
-    result = result.groupby("Marque / fournisseur", as_index=False)["Valeur Totale HT"].sum()
-    return result.sort_values(by="Valeur Totale HT", ascending=False)
+    result = result.groupby("Marque / fournisseur", as_index=False)["Valeur totale"].sum()
+    return result.sort_values(by="Valeur totale", ascending=False)
 
 
 def sort_sizes(df):
@@ -956,7 +956,7 @@ if fichier_telecharge is not None:
             with tab6:
                 st.subheader("Valorisation par marque / fournisseur")
                 df_tv = total_stock_value_by_supplier(df)
-                st.metric("Valeur Totale Globale du Stock", f"{df_tv['Valeur Totale HT'].sum():,.2f}".replace(",", " "))
+                st.metric("Valeur Totale Globale du Stock", f"{df_tv['Valeur totale'].sum():,.2f}".replace(",", " "))
                 st.dataframe(df_tv, use_container_width=True)
 
             with tab7:

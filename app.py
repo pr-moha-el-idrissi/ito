@@ -812,7 +812,8 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
-st.caption("Import CSV / Excel — formats historiques et export Ayada TDR de novembre 2026")
+st.caption("Ayada TDR · Import stock Excel/CSV · Build 2026-11-21-R5")
+st.sidebar.caption("Version du site : 2026-11-21-R5")
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3081/3081840.png", width=50)
 st.sidebar.markdown("### Menu Principal")
 st.sidebar.info("Téléchargez un fichier CSV ou Excel pour commencer l'analyse.")
@@ -878,7 +879,25 @@ if fichier_telecharge is not None:
             df = clean_numeric_columns(df)
             df = clean_size_column(df)
 
+            total_stock_value = float(df["Valeur Stock"].sum())
+            negative_stock_count = int(
+                ((df["Qté stock dispo"] < 0) & (df["Valeur Stock"] < 0)).sum()
+            )
             st.success(f"Données chargées avec succès — {len(df):,} lignes.".replace(",", " "))
+            if is_ayada_export:
+                summary_left, summary_middle, summary_right = st.columns(3)
+                summary_left.metric("Valeur totale importée", f"{total_stock_value:,.2f}".replace(",", " "))
+                summary_middle.metric("Références en stock négatif", negative_stock_count)
+                summary_right.metric("Quantité totale disponible", f"{df['Qté stock dispo'].sum():,.0f}".replace(",", " "))
+                st.caption(
+                    "Contrôle de l'import : valeurs reprises de « Valeur totale » "
+                    "et stocks négatifs définis par quantité < 0 et valeur < 0."
+                )
+                if total_stock_value == 0 and (df["Qté stock dispo"] != 0).any():
+                    st.error(
+                        "La valeur totale est nulle malgré des quantités de stock. "
+                        "Vérifiez la colonne « Valeur totale » dans le fichier source."
+                    )
             if excluded_adjustments:
                 st.info(
                     f"{excluded_adjustments:,} lignes d'ajustement virtuel exclues "
@@ -926,6 +945,10 @@ if fichier_telecharge is not None:
 
             with tab3:
                 st.subheader("Produits en stock négatif")
+                if negative_stock_count == 0:
+                    st.info("Aucune ligne avec quantité et valeur de stock négatives.")
+                else:
+                    st.caption(f"{negative_stock_count} ligne(s) de stock négatif identifiée(s).")
                 st.caption(
                     "Seules les lignes avec une quantité disponible négative "
                     "ET une valeur de stock strictement négative sont affichées. "

@@ -208,8 +208,17 @@ def find_column(df, aliases):
 
 
 def to_numeric_series(values):
-    cleaned = values.astype(str).str.replace(r"[\s\u00a0\u202f]", "", regex=True)
-    cleaned = cleaned.str.replace(",", ".", regex=False)
+    # Support French/English currency strings, e.g. "1 029,39€".
+    cleaned = values.astype(str).str.replace("−", "-", regex=False)
+    cleaned = cleaned.str.replace(r"[^\d,.\-+]", "", regex=True)
+    comma_pos, dot_pos = cleaned.str.rfind(","), cleaned.str.rfind(".")
+    european = (comma_pos >= 0) & (comma_pos > dot_pos)
+    cleaned.loc[european] = (
+        cleaned.loc[european].str.replace(".", "", regex=False)
+        .str.replace(",", ".", regex=False)
+    )
+    american = (comma_pos >= 0) & ~european
+    cleaned.loc[american] = cleaned.loc[american].str.replace(",", "", regex=False)
     return pd.to_numeric(cleaned, errors="coerce")
 
 
@@ -217,22 +226,33 @@ def standardize_stock_columns(df):
     df = df.copy()
     df.columns = [str(column).strip() for column in df.columns]
 
-    # Use 'Marque' for supplier views when a supplier name is unavailable.
+    # Retain actual suppliers, filling only missing cells from brand names.
     supplier_source = find_column(df, ["fournisseur", "supplier", "vendor"])
     brand_source = find_column(df, ["marque", "brand"])
-    if supplier_source is not None:
-        df["fournisseur"] = df[supplier_source]
-    elif brand_source is not None:
-        df["fournisseur"] = df[brand_source]
-    else:
-        df["fournisseur"] = ""
+    suppliers = (
+        df[supplier_source].fillna("").astype(str).str.strip()
+        if supplier_source is not None
+        else pd.Series("", index=df.index, dtype="object")
+    )
+    brands = (
+        df[brand_source].fillna("").astype(str).str.strip()
+        if brand_source is not None
+        else pd.Series("", index=df.index, dtype="object")
+    )
+    supplier_fallback_rows = int((suppliers.eq("") & brands.ne("")).sum())
+    df["fournisseur"] = suppliers.where(suppliers.ne(""), brands)
 
     text_aliases = {
         "barcode": ["barcode", "code-barres", "code barre", "ean", "ean13"],
+        "reference": ["référence parente", "reference parente", "product reference",
+                      "référence produit", "reference produit", "internal reference"],
+        "display_name": ["nom d'affichage", "display name"],
         "couleur": ["couleur", "color", "colour"],
         "taille": ["taille", "size"],
-        "designation": ["designation produit", "designation", "product name", "nom du produit", "libelle", "produit"],
+        "designation": ["designation produit", "designation", "product name",
+                        "nom du produit", "nom", "libelle", "produit"],
         "rayon": ["rayon", "genre", "gender", "sexe"],
+        "saison": ["saison", "season"],
         "famille": ["famille", "family"],
         "categorie": ["categorie", "category"],
         "ssfamille": ["ssfamille", "sous-famille", "sous-categorie", "subcategory", "subfamily"],
@@ -241,6 +261,9 @@ def standardize_stock_columns(df):
         source = find_column(df, aliases)
         if source is not None:
             df[target] = df[source]
+    if "designation" in df.columns and "display_name" in df.columns:
+        missing_name = df["designation"].fillna("").astype(str).str.strip().eq("")
+        df.loc[missing_name, "designation"] = df.loc[missing_name, "display_name"]
 
     if brand_source is not None:
         df["marque"] = df[brand_source]
@@ -268,10 +291,21 @@ def standardize_stock_columns(df):
             quantity = quantity - to_numeric_series(df[reserved_source]).fillna(0)
     df["Qté stock dispo"] = quantity.fillna(0)
 
+    # Forecast and incoming figures are separate from available physical stock.
+    virtual_source = find_column(df, [
+        "Quantité virtuellement disponible", "forecasted quantity", "virtual available"
+    ])
+    if virtual_source is not None:
+        df["Qté virtuelle"] = to_numeric_series(df[virtual_source]).fillna(0)
+    incoming_source = find_column(df, ["Entrant", "incoming quantity", "incoming"])
+    if incoming_source is not None:
+        df["Qté entrante"] = to_numeric_series(df[incoming_source]).fillna(0)
+
     # Odoo's 'Valeur' is already a total valuation per inventory/location
     # row. Treating it as unit price would multiply the stock value twice.
     price_source = find_column(df, [
-        "Prix Achat", "purchase price", "unit cost", "cout unitaire"
+        "Prix Achat", "Coût moyen", "cout moyen", "average cost",
+        "purchase price", "unit cost", "cout unitaire"
     ])
     value_source = find_column(df, ["Valeur"])
     is_odoo_export = (
@@ -279,8 +313,8 @@ def standardize_stock_columns(df):
         and find_column(df, ["Quantité inventoriée"]) is not None
     )
     stock_value_aliases = [
-        "Valeur Stock", "stock value", "inventory value",
-        "valeur totale du stock"
+        "Valeur Stock", "Valeur totale", "total value",
+        "stock value", "inventory value", "valeur totale du stock"
     ]
     if is_odoo_export:
         stock_value_aliases.append("Valeur")
@@ -314,8 +348,9 @@ def standardize_stock_columns(df):
         df["Valeur Stock"] = calculated_value.fillna(0)
 
     for column in [
-        "fournisseur", "barcode", "couleur", "taille", "designation",
-        "rayon", "marque", "famille", "categorie", "ssfamille"
+        "fournisseur", "barcode", "reference", "display_name",
+        "couleur", "taille", "designation", "rayon", "marque", "saison",
+        "famille", "categorie", "ssfamille"
     ]:
         if column not in df.columns:
             df[column] = ""
@@ -323,11 +358,13 @@ def standardize_stock_columns(df):
 
     # Prevent sparse numeric barcode columns from displaying a trailing '.0'.
     df["barcode"] = df["barcode"].str.replace(r"\.0$", "", regex=True)
-    return df, supplier_source is None and brand_source is not None
+    df["reference"] = df["reference"].str.replace(r"\.0$", "", regex=True)
+    return df, supplier_fallback_rows
 
 
 def clean_numeric_columns(df):
-    for column in ["Prix Achat", "Qté stock dispo", "Valeur Stock"]:
+    for column in ["Prix Achat", "Qté stock dispo", "Valeur Stock",
+                   "Qté virtuelle", "Qté entrante"]:
         if column in df.columns:
             df[column] = to_numeric_series(df[column]).fillna(0)
     return df

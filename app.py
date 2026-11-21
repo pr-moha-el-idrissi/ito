@@ -385,11 +385,28 @@ def highlight_row_if_one(row):
         return ['background-color: #FEE2E2; color: #991B1B' for _ in row]
     return [''] * len(row)
 
+def identifier_columns(df):
+    """Distinguish a parent reference from a barcode in the tables."""
+    return [
+        col for col in ("barcode", "reference")
+        if col in df.columns
+        and df[col].fillna("").astype(str).str.strip().ne("").any()
+    ]
+
+
 def display_supplier_info(df, fournisseur):
-    colonnes_afficher = ['fournisseur', 'barcode', 'couleur', 'taille', 'designation', 'rayon', 'marque', 'famille', 'Qté stock dispo', 'Valeur Stock']
+    colonnes_afficher = (
+        ['fournisseur'] + identifier_columns(df) +
+        ['couleur', 'taille', 'designation', 'rayon', 'marque',
+         'famille', 'Qté stock dispo', 'Valeur Stock']
+    )
     fournisseur = fournisseur.strip().upper()
     df['fournisseur'] = df['fournisseur'].fillna('')
-    df_filtered = df[df['fournisseur'].str.upper() == fournisseur] if fournisseur else pd.DataFrame(columns=colonnes_afficher)
+    df_filtered = (
+        df[(df['fournisseur'].str.upper() == fournisseur)
+           | (df['marque'].str.upper() == fournisseur)]
+        if fournisseur else pd.DataFrame(columns=colonnes_afficher)
+    )
     if not df_filtered.empty:
         designations_rayons = df_filtered.groupby(['designation', 'rayon']).size().reset_index(name='Nombre de références')
         designations_rayons = designations_rayons.sort_values(['designation', 'rayon'])
@@ -471,7 +488,10 @@ def display_supplier_info(df, fournisseur):
     return df_filtered[colonnes_afficher]
 
 def display_designation_info(df, designation):
-    colonnes_a_afficher = ['barcode', 'taille', 'rayon', 'couleur', 'designation', 'Qté stock dispo']
+    colonnes_a_afficher = (
+        identifier_columns(df) +
+        ['taille', 'rayon', 'couleur', 'designation', 'Qté stock dispo']
+    )
     designation = designation.strip().upper()
     df['designation'] = df['designation'].fillna('')
     df_filtered = df[df['designation'].str.upper() == designation] if designation else pd.DataFrame(columns=colonnes_a_afficher)
@@ -504,7 +524,12 @@ def display_designation_info(df, designation):
         return [''] * len(row)
     if not df_filtered.empty and 'taille_num' in df_filtered.columns:
         df_filtered = df_filtered.sort_values('taille_num')
-    st.dataframe(df_filtered[colonnes_a_afficher].style.apply(highlight_row_if_one_cond, axis=1), use_container_width=True)
+    st.dataframe(
+        df_filtered[colonnes_a_afficher]
+        .rename(columns={"barcode": "Code-barres", "reference": "Référence"})
+        .style.apply(highlight_row_if_one_cond, axis=1),
+        use_container_width=True
+    )
     if not sum_by_size.empty:
         sum_homme = sum_by_size[sum_by_size['Rayon'] == 'HOMME']
         sum_femme = sum_by_size[sum_by_size['Rayon'] == 'FEMME']
@@ -522,10 +547,11 @@ def display_designation_info(df, designation):
 
 def filter_negative_stock(df):
     """Show only products with both negative quantity and negative stock value."""
-    colonnes_afficher = [
-        'fournisseur', 'barcode', 'couleur', 'taille', 'designation',
-        'rayon', 'marque', 'famille', 'Qté stock dispo', 'Valeur Stock'
-    ]
+    colonnes_afficher = (
+        ['fournisseur'] + identifier_columns(df) +
+        ['couleur', 'taille', 'designation', 'rayon', 'marque',
+         'famille', 'Qté stock dispo', 'Valeur Stock']
+    )
     quantite = pd.to_numeric(df['Qté stock dispo'], errors='coerce')
     valeur = pd.to_numeric(df['Valeur Stock'], errors='coerce')
     return df.loc[(quantite < 0) & (valeur < 0), colonnes_afficher].copy()
@@ -593,21 +619,31 @@ def display_stock_by_family(df):
     total_value = work["Valeur Stock"].sum()
     col1, col2 = st.columns(2)
     col1.metric("Quantité disponible", f"{total_stock:,.0f}".replace(",", " "))
-    col2.metric("Valeur totale du stock", f"{total_value:,.2f} €".replace(",", " "))
+    col2.metric("Valeur totale du stock", f"{total_value:,.2f}".replace(",", " "))
 
-    columns = [
-        "famille", "categorie", "ssfamille", "rayon", "fournisseur",
-        "couleur", "taille", "designation", "Qté stock dispo", "Valeur Stock"
-    ]
+    columns = (
+        ["famille", "categorie", "ssfamille", "rayon", "fournisseur", "marque"]
+        + identifier_columns(work)
+        + [c for c in ["saison", "couleur", "taille"] if work[c].ne("").any()]
+        + ["designation", "Qté stock dispo"]
+        + [c for c in ["Qté virtuelle", "Qté entrante"] if c in work.columns]
+        + ["Valeur Stock"]
+    )
     display = work[columns].rename(columns={
         "famille": "Famille",
         "categorie": "Catégorie",
         "ssfamille": "Sous-catégorie",
         "rayon": "Genre",
-        "fournisseur": "Marque / fournisseur",
+        "fournisseur": "Fournisseur / repli marque",
+        "marque": "Marque",
+        "barcode": "Code-barres",
+        "reference": "Référence",
+        "saison": "Saison",
         "couleur": "Couleur",
         "taille": "Taille",
         "designation": "Désignation",
+        "Qté virtuelle": "Quantité prévue",
+        "Qté entrante": "Quantité entrante",
     })
     st.dataframe(display.style.apply(highlight_row_if_one, axis=1), use_container_width=True)
 
@@ -776,7 +812,7 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
-st.caption("Version Odoo corrigée — 10/11/2026 — build 2026-11-10-R4")
+st.caption("Import CSV / Excel — formats historiques et export Ayada TDR de novembre 2026")
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3081/3081840.png", width=50)
 st.sidebar.markdown("### Menu Principal")
 st.sidebar.info("Téléchargez un fichier CSV ou Excel pour commencer l'analyse.")
@@ -833,11 +869,12 @@ if fichier_telecharge is not None:
                                 "des emplacements virtuels."
                             )
 
-            uses_brand_as_supplier = (
-                find_column(df, ["fournisseur", "supplier", "vendor"]) is None
-                and find_column(df, ["marque", "brand"]) is not None
+            is_ayada_export = all(
+                find_column(df, [name]) is not None
+                for name in ["Nom", "Coût moyen", "Valeur totale",
+                             "Quantité disponible", "Référence parente"]
             )
-            df, _ = standardize_stock_columns(df)
+            df, supplier_fallback_rows = standardize_stock_columns(df)
             df = clean_numeric_columns(df)
             df = clean_size_column(df)
 
@@ -853,10 +890,15 @@ if fichier_telecharge is not None:
                     "Dans l'export Odoo, « Valeur » correspond à la "
                     "valorisation totale d'une ligne, pas au prix unitaire."
                 )
-            if uses_brand_as_supplier:
+            if is_ayada_export:
+                st.caption(
+                    "Format Ayada TDR reconnu : les valeurs totales sont conservées, "
+                    "sans recalcul. La devise n'est pas spécifiée dans le fichier."
+                )
+            if supplier_fallback_rows:
                 st.info(
-                    "Cet export ne contient pas de fournisseur dédié. "
-                    "Les vues par fournisseur utilisent la colonne « Marque »."
+                    f"Fournisseur absent pour {supplier_fallback_rows:,} lignes : "
+                    "la marque est utilisée uniquement pour ces lignes."
                 )
 
             tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
@@ -869,7 +911,11 @@ if fichier_telecharge is not None:
                 fournisseur = st.text_input("Rechercher une marque ou un fournisseur :")
                 df_filtered = display_supplier_info(df.copy(), fournisseur)
                 if not df_filtered.empty:
-                    display = df_filtered.rename(columns={"fournisseur": "Marque / fournisseur"})
+                    display = df_filtered.rename(columns={
+                        "fournisseur": "Marque / fournisseur",
+                        "barcode": "Code-barres",
+                        "reference": "Référence"
+                    })
                     st.dataframe(display.style.apply(highlight_row_if_one, axis=1), use_container_width=True)
                 elif fournisseur:
                     st.warning("Aucune information disponible pour cette marque ou ce fournisseur.")
@@ -886,7 +932,11 @@ if fichier_telecharge is not None:
                     "Les valeurs égales à 0 sont exclues."
                 )
                 negative_stock = filter_negative_stock(df.copy()).rename(
-                    columns={"fournisseur": "Marque / fournisseur"}
+                    columns={
+                        "fournisseur": "Marque / fournisseur",
+                        "barcode": "Code-barres",
+                        "reference": "Référence"
+                    }
                 )
                 st.dataframe(
                     negative_stock.style.apply(highlight_row_if_one, axis=1),
@@ -906,7 +956,7 @@ if fichier_telecharge is not None:
             with tab6:
                 st.subheader("Valorisation par marque / fournisseur")
                 df_tv = total_stock_value_by_supplier(df)
-                st.metric("Valeur Totale Globale du Stock", f"{df_tv['Valeur Totale HT'].sum():,.2f} €".replace(",", " "))
+                st.metric("Valeur Totale Globale du Stock", f"{df_tv['Valeur Totale HT'].sum():,.2f}".replace(",", " "))
                 st.dataframe(df_tv, use_container_width=True)
 
             with tab7:
